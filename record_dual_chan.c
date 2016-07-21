@@ -187,7 +187,7 @@ void ShortToReal(signed short* shrt,double* real,int siz) {
 
 
 
-snd_pcm_t *capture_handle;
+snd_pcm_t *capture_handle[2];
 snd_pcm_hw_params_t *hw_params;
 snd_pcm_format_t format = SND_PCM_FORMAT_S16_LE;
 
@@ -246,7 +246,8 @@ void init_audio(snd_pcm_t ** capture_handle, snd_pcm_hw_params_t ** hw_params , 
 	
   //fprintf(stdout, "hw_params rate setted\n");
  
-  if ((err = snd_pcm_hw_params_set_channels (*capture_handle, *hw_params, 2)) < 0) {
+  //if ((err = snd_pcm_hw_params_set_channels (*capture_handle, *hw_params, 2)) < 0) {
+  if ((err = snd_pcm_hw_params_set_channels (*capture_handle, *hw_params,1)) < 0) {
     fprintf (stderr, "cannot set channel count (%s)\n",
              snd_strerror (err));
     exit (1);
@@ -275,6 +276,25 @@ void init_audio(snd_pcm_t ** capture_handle, snd_pcm_hw_params_t ** hw_params , 
 
 }
 
+
+void *thread_single_capture(void * xp) {
+   void ** x = (void**)xp;
+   signed short * buffer = x[0];
+   int th_id = (int)x[1]; 
+   signed short * buffers[] = {buffer};
+   //fprintf(stderr,"Starting to capture %d %p\n",th_id,buffer);
+    int err;
+      assert(capture_handle[th_id]!=NULL);
+      if ((err = snd_pcm_readn (capture_handle[th_id], buffers, SAMPLES)) != SAMPLES) {
+        fprintf (stderr, "read from audio interface failed (%s)\n",
+                 snd_strerror (err));
+       exit (1);
+    }
+  //fprintf(stderr,"THREAD done!\n");
+   return NULL;
+}
+
+
 void *thread_capture(void *threadarg) {
 
   //lock the audio system
@@ -289,12 +309,32 @@ void *thread_capture(void *threadarg) {
     pthread_mutex_lock(&lock);
     //fprintf(stderr,"THREAD %d %d\n",*th_id,SAMPLES); 
     //memset(buffer,0,SAMPLES * snd_pcm_format_width(format) / 8 * 2);
-    int err;
-      if ((err = snd_pcm_readn (capture_handle, buffers, SAMPLES)) != SAMPLES) {
+
+    //capture samples
+	
+    void * addys[4];
+    pthread_t threads[2];
+    for (int i=0; i<2; i++) {
+       addys[0+2*i]=buffers[i];
+       assert(addys[0]!=NULL);
+       addys[1+2*i]=i; 
+       pthread_create(threads+i,NULL,thread_single_capture,addys+2*i);
+    }
+  
+    for (int i=0; i<2; i++) {
+      pthread_join(threads[i], NULL );
+    }
+
+    //fprintf(stderr,"THREADS DONE!\n");
+
+
+
+    /*int err;
+      if ((err = snd_pcm_readn (capture_handle[0], buffers, SAMPLES)) != SAMPLES) {
         fprintf (stderr, "read from audio interface failed (%s)\n",
                  snd_strerror (err));
        exit (1);
-    }
+    }*/
     pthread_mutex_unlock(&lock);
     //now copy over to complex buffer
     //compute mean and stddev
@@ -364,10 +404,16 @@ int main (int argc, char *argv[]) {
 
 
   char b[1024];
-  sprintf(b,MIC_DEVICE,0);
   init_xcorr();
   fprintf(stderr,"Setting %d\n",0);
-  init_audio(&capture_handle,&hw_params,b);
+ 
+  for (int i=1; i<=2; i++){  
+  	sprintf(b,MIC_DEVICE,i);
+  	init_audio(capture_handle+i-1,&hw_params,b); 
+        assert(capture_handle[i-1]!=NULL);
+  }
+  fprintf(stderr,"SUCCESS %p %p\n",capture_handle[0],capture_handle[1]);
+
     int th_ids[] = {0,1};
 
     pthread_t threads[2];
