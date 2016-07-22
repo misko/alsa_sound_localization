@@ -16,19 +16,10 @@ actual_steps=[]
 actual_steps_bins=[]
 RATE = 44100
 
-#ChirpFile = "sound files/plain_chirp.wav"
-#transmitChirp = wave.open(ChirpFile, 'rb')
-ChirpPeriod = 2
-
 sample_window=2048
 
 Chunk = 1024
 Format = pyaudio.paInt16
-#SampWidth = transmitChirp.getsampwidth()
-#Channels = transmitChirp.getnchannels()
-#Rate = transmitChirp.getframerate()
-#Time in seconds to display at one time on the waveform display
-WindowTime = 1
 
 #Create a synchronized queue that can only hold one list
 recordQueue = Queue.Queue(Chunk)
@@ -40,22 +31,24 @@ def playcallback(in_data, frame_count, time_info, status):
     return (out_data , pyaudio.paContinue)
 
 def recordcallback(in_data, frame_count, time_info, status):
-    recordQueue.put(np.fromstring(in_data, 'Int16'))
-    #print len(in_data)
+    recordQueue.put(np.fromstring(in_data, np.int8))
     return (in_data, pyaudio.paContinue)   
 
 def showtimespectrum(audio):
-    audioTime = float(len(audio)) / RATE
-        
+    assert(len(audio)==sample_window)
     fftData=abs(np.fft.rfft(audio))**2
     freqs=np.fft.rfftfreq(len(audio),d=1.0/RATE)
-    print freqs[np.argmax(fftData)],np.argmax(fftData),actual_steps_bins,"MAX FREQ",freqs[-1]
+    #print freqs[np.argmax(fftData)],np.argmax(fftData),actual_steps_bins,"MAX FREQ",freqs[-1]
     z=np.zeros(len(actual_steps))
     i=0
     for b in actual_steps_bins:
       z[i]=fftData[b]
       i+=1
-    print z/z.sum(),actual_steps
+    s=[]
+    for k in z:
+	s.append("%0.2f" % (k/z.sum()))
+    print(",".join(s))
+    #print z/z.sum(),actual_steps
     #print z/fftData.mean()
 
 
@@ -69,7 +62,7 @@ def play_ladder(p,l=3): #,2000,4000]):
                     output = True)
     while True:
       for f in steps:
-        n_frames = sample_window #int(RATE*l)
+        n_frames = int(RATE*l) # sample_window #int(RATE*l)
         stream.write((np.sin(2*np.arange(n_frames)*np.pi*f/RATE)*127+128).astype(np.uint8))
     stream.stop_stream()
     stream.close()
