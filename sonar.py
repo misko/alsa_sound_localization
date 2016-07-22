@@ -11,7 +11,8 @@ import numpy as np
 #import matplotlib.pyplot as plt
 import scipy.io.wavfile
 import scipy.fftpack
-
+from datetime import datetime
+#import time
 actual_steps=[]
 actual_steps_bins=[]
 RATE = 44100
@@ -44,12 +45,11 @@ def showtimespectrum(audio):
     for b in actual_steps_bins:
       z[i]=fftData[b]
       i+=1
-    s=[]
-    for k in z:
-	s.append("%0.2f" % (k/z.sum()))
-    print(",".join(s))
-    #print z/z.sum(),actual_steps
-    #print z/fftData.mean()
+    if z.sum()/fftData.sum()>0.1:
+	    s=[]
+	    for k in z:
+		s.append("%0.2f" % (k/z.sum()))
+            print datetime.now().strftime("%Y-%m-%d %H:%M %S.%f") ,",".join(s)
 
 
 #def play_ladder(p,l=1,steps=[260,500,1000,2000,3000,17000]): #,2000,4000]):
