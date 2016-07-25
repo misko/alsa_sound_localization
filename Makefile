@@ -1,4 +1,4 @@
-all: play_tone get_tone
+all: play_tone get_tone blup_blop
 
 
 play_tone: play_tone.c
@@ -6,3 +6,6 @@ play_tone: play_tone.c
 
 get_tone: get_tone.c
 	gcc -std=c99 -lfftw3 -lm -lasound -lpthread get_tone.c -o get_tone
+
+blup_blop: blup_blop.c
+	gcc -std=c99 -lfftw3 -lm -lasound -lpthread blup_blop.c -o blup_blop
