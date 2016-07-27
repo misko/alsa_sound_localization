@@ -1,0 +1,11 @@
+sudo apt-get install pulseaudio-module-bluetooth
+pactl load-module module-switch-on-connect
+bluetoothctl
+power on
+agent on
+default-agent
+scan on
+trust XXXXXXXX
+pair XXXXXXXX
+connect XXXXX
+
