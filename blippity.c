@@ -26,7 +26,7 @@
 
 #define M_PI (3.14159265358979323846264338327950288)
 
-long read_sample_window=256;
+long read_sample_window=4096;
 long fft_length=256;
 double sensitivity=0.5;
 struct timeval udp_time;
@@ -44,9 +44,6 @@ pthread_mutex_t lock_time = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t lock_fftw = PTHREAD_MUTEX_INITIALIZER;
 
-fftw_complex * signal_ext;
-fftw_complex * out;
-
 fftw_plan pa;
 
 double target_freqA=0;
@@ -56,28 +53,32 @@ int target_freqB_bin=0;
 double * freq_bins=NULL;
 double freq_step=0;
 
+fftw_complex * signal_in;
+fftw_complex * signal_out;
+
 void init_fft() {
-	signal_ext = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * fft_length);
-	out = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * fft_length);
-	pa = fftw_plan_dft_1d(fft_length , signal_ext, out, FFTW_FORWARD, FFTW_ESTIMATE);
+	signal_in = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * fft_length);
+	signal_out = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * fft_length);
+	pa = fftw_plan_dft_1d(fft_length , signal_in, signal_out, FFTW_FORWARD, FFTW_ESTIMATE);
 }
 void close_fft() {
 	fftw_destroy_plan(pa);
-	fftw_free(signal_ext);
-	fftw_free(out);
+	fftw_free(signal_in);
+	fftw_free(signal_out);
 	fftw_cleanup();
 }
-void fft() {
-	fftw_execute(pa);
+void fft(fftw_complex * in, fftw_complex *out) {
+	fftw_execute_dft(pa,in,out);
 	return;
 }
 
-int16_t * add_tone(float freq, int n_frames, int16_t* buffer) {
+int16_t * add_tone(float freqA, float freqB, int n_frames, int16_t* buffer) {
 	for (int i=0; i<n_frames; i++) {
-		if (freq==0) {
+		if (freqA==0 && freqB==0) {
 			buffer[i]=0;
 		} else {
-			buffer[i]=sin(2*i*M_PI*freq/sampling_rate)*(pow(2,15));
+			buffer[i]=sin(2*i*M_PI*freqA/sampling_rate)*(pow(2,14));
+			buffer[i]+=sin(2*i*M_PI*freqB/sampling_rate)*(pow(2,14));
 		}
 	}
 	return buffer; 
@@ -88,7 +89,7 @@ int16_t * generate_tone(float freq, int n_frames) {
 	if (buffer==NULL) {
 		fprintf(stderr,"Failed to allocate space in generate_tone\n");
 	}
-	add_tone(freq,n_frames,buffer);
+	add_tone(freq,freq,n_frames,buffer);
 	return buffer; 
 }
 
@@ -178,6 +179,17 @@ void init_record_audio(snd_pcm_t ** capture_handle, snd_pcm_hw_params_t ** hw_pa
 
 
 void *thread_single_capture(void * x) {
+	struct timespec sleep_time,slept_time;
+	sleep_time.tv_sec=read_sample_window/sampling_rate;
+	sleep_time.tv_nsec=1e9*(((double)read_sample_window)/sampling_rate-sleep_time.tv_sec);
+	//fprintf(stderr,"Sleep for %ld %ld\n",sleep_time.tv_sec,sleep_time.tv_nsec);
+	nanosleep(&sleep_time,&slept_time);
+	snd_pcm_sframes_t delayp;
+	snd_pcm_sframes_t availp;
+	int ret= snd_pcm_avail_delay( capture_handle, &availp, &delayp);
+	fprintf(stderr, "%d %ld %ld %ld %0.6f\n",ret,delayp, availp, availp+delayp,1e6*((double)availp)/sampling_rate);
+
+
 	signed short * buffer = (signed short*)x;
 	signed short * buffers[] = {buffer};
 	int err;
@@ -198,8 +210,8 @@ void *thread_single_capture(void * x) {
 		fprintf(stderr,"FAILED TO get time...\n");
 		exit(1);
 	}
-	long delta_micro = 1000000 * (end_capt.tv_sec-start_capt.tv_sec) + (end_capt.tv_usec-start_capt.tv_usec); // - 1000000*((float)SAMPLES)/sampling_rate;
-	fprintf(stderr,"%ld microseconds on overhead capture %ld\n",delta_micro, (1000000*read_sample_window)/sampling_rate );
+	long delta_micro = (1e6 * end_capt.tv_sec + end_capt.tv_usec) - (1e6*start_capt.tv_sec + start_capt.tv_usec); // - 1000000*((float)SAMPLES)/sampling_rate;
+	fprintf(stderr,"%ld microseconds on overhead capture %0.6f\n",delta_micro, ((double)1e6*read_sample_window)/sampling_rate );
 	return NULL; 
 }
 
@@ -244,15 +256,30 @@ void *thread_capture(void *threadarg) {
 	//fprintf(stderr,"%0.3lf %d\n",target_freq,target_freq_bin);
 	//lock the audio system
 	signed short *buffer =  malloc(read_sample_window * snd_pcm_format_width(format) / 8 );
-	fftw_complex * result = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * fft_length);
+	fftw_complex * in = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * fft_length);
+	fftw_complex * out = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * fft_length);
 	fftw_complex * power_spectrum = (fftw_complex *) fftw_malloc(sizeof(fftw_complex) * (fft_length/2+1));
 	
 	int *th_id = (int*)threadarg;
 
+	int stride=fft_length/8;
+	int strides = (read_sample_window-fft_length)/stride+1;
+	double * powerAs = (double*)malloc(sizeof(double)*strides);	
+	double * powerBs = (double*)malloc(sizeof(double)*strides);
+	if (powerAs==NULL || powerBs==NULL) {
+		fprintf(stderr,"Failed to malloc memory for power arrays\n");
+		exit(1);
+	}
+	
+
 	while (1) {
+		int max_i=0;
+		for (int i=0; i<strides; i++) {
+			powerAs[i]=0;
+			powerBs[i]=0;
+		}
 		//get mutex for sound listening 
 		pthread_mutex_lock(&lock);
-		//pthread_create(threads+i,NULL,thread_single_capture,addys+2*i);
 		thread_single_capture(buffer);
 		pthread_mutex_unlock(&lock);
 
@@ -273,88 +300,53 @@ void *thread_capture(void *threadarg) {
 		//fprintf(stderr,"MEAN %e STDDEV %e\n",mean,stddev);
 		stddev=sqrt(var);
 
-		for (int j=0; j<read_sample_window/fft_length; j++) {
-			pthread_mutex_lock(&lock_fftw);
-			for (int i=0; i<read_sample_window; i++) {
-				signal_ext[i]=buffer[j*fft_length+i]/stddev;
+
+
+		for (int j=0; j<(read_sample_window-fft_length)/stride+1; j++) {
+			for (int i=0; i<fft_length; i++) {
+				in[i]=buffer[j*stride+i]/stddev;
 			}
-			fft();
-			memcpy(result,out,sizeof(fftw_complex)*read_sample_window);
-			pthread_mutex_unlock(&lock_fftw);
+			fftw_execute_dft(pa,in,out);
 
-
-			power_spectrum[0] = abs(result[0]*result[0]); //DC component
-			power_spectrum[read_sample_window/2] = abs(result[read_sample_window/2]*result[read_sample_window/2]);  /* Nyquist freq. */
-			for (int k = 1; k <read_sample_window/2; ++k)  /* (k < N/2 rounded up) */
-				power_spectrum[k] = abs(result[k]*result[k] + result[read_sample_window-k]*result[read_sample_window-k]);
+			power_spectrum[0] = abs(out[0]*out[0]); //DC component
+			power_spectrum[fft_length/2] = abs(out[fft_length/2]*out[fft_length/2]);  /* Nyquist freq. */
+			for (int k = 1; k <fft_length/2; ++k)  /* (k < N/2 rounded up) */
+				power_spectrum[k] = abs(out[k]*out[k] + out[fft_length-k]*out[fft_length-k]);
 
 			double normalize = 0;
-			for (int k = 1; k<read_sample_window/2; ++k)
+			for (int k = 1; k<fft_length/2; ++k)
 				normalize+=power_spectrum[k];
-			//for (int k = target_freq_bin-5; k<target_freq_bin+5; ++k)
-			//	normalize+=abs(power_spectrum[k]);
-			//for (int i=0; i<=SAMPLES/2; i++) {
-			//	fprintf(stderr,"%0.2fHz %0.3f,", freq_bins[i],creal(power_spectrum[i]/normalize));
-			//}
-			//fprintf(stderr,"%0.3lf %d %0.3lf\n",creal(power_spectrum[target_freq_bin]/normalize),target_freq_bin,normalize);
-			//fprintf(stderr,"\n");
-			//for (int i=0; i<SAMPLES; i++) {
-			//	fprintf(stderr,"%0.3f %0.3f,", creal(result[i]), cimag(result[i]));
-			//}
-
-			/*int mxi=1;
-			  float mx=creal(power_spectrum[mxi]);
-			  for (int k=1; k<SAMPLES/2; k++) {
-			  float v = creal(power_spectrum[k]);
-			  if (v>mx) {
-			  mxi=k;
-			  mx=v;
-			  }
-			  }
-			  fprintf(stderr, "MAX BIN %0.3f %0.3f %d\n",mx/normalize,freq_bins[mxi],mxi); */
 
 
-			/*
-
-			   Slide a quarter window across and try to find out the maximum values, then where
-			   the maximum values start and taper off in front
-
-			   if we cant find the start accurately because its too close to the front maybe we can save 
-			   all blocks and have block IDs or maybe it doesnt matter significantly
-
-			   OR
-
-			   just have a bigger window and scan in quarter size sliding window,
-			   that way will have a better chance of catching the signal start in one window that can be 			reasonably scanned
-
-			   ALSO
-
-			   measure time of start capture call and return time, to get an estimate on card delay
-			   which could be variable!	
-
-			   card_delay = (end - start) - samples/sampling_rate
-
-			 */
-
-			if (creal(power_spectrum[target_freqA_bin]/normalize)>sensitivity && udp_time.tv_usec>0) {
-				int ret = pthread_mutex_trylock(&lock_time);
-				if (ret==0) {
-					struct timeval time;
-					if(gettimeofday( &time, 0 )) {
-						fprintf(stderr,"FAILED TO get time...\n");
-						exit(1);
-					}
-
-					long delta_micro = 1000000 * (time.tv_sec-udp_time.tv_sec) + (time.tv_usec-udp_time.tv_usec) - 1000000*((float)read_sample_window)/sampling_rate;
-					deltas[ndeltas++%NDELTAS]=delta_micro;
-					//print_avg();
-					print_min();
-					//fprintf(stderr, "Delta %ld\n",delta_micro);
-					udp_time.tv_usec=0;
-					pthread_mutex_unlock(&lock_time);
-				}
-			}
+			powerAs[j] = creal(power_spectrum[target_freqA_bin]/normalize);
+			powerBs[j] = creal(power_spectrum[target_freqB_bin]/normalize);
+			//fprintf(stdout, "%0.2f %0.2f\n",powerA,powerB);
 		}	
+	
+		for (int i=0; i<strides; i++) {
+			//if ((powerAs[i]+powerBs[i])>(powerAs[max_i]+powerBs[max_i])) {
+			if ((powerAs[i]*powerBs[i])>(powerAs[max_i]*powerBs[max_i])) {
+				max_i=i;
+			}
+		}
+		if (powerAs[max_i]>sensitivity && powerBs[max_i]>sensitivity && (powerAs[max_i]+powerBs[max_i])>3*sensitivity) {// && udp_time.tv_usec>0) {
+			int ret = pthread_mutex_trylock(&lock_time);
+			if (ret==0) {
+				struct timeval time;
+				if(gettimeofday( &time, 0 )) {
+					fprintf(stderr,"FAILED TO get time...\n");
+					exit(1);
+				}
+				fprintf(stderr,"%ld %ld, %0.2f %0.2f\n",time.tv_sec,time.tv_usec,powerAs[max_i],powerBs[max_i]);
+				//long delta_micro = 1000000 * (time.tv_sec-udp_time.tv_sec) + (time.tv_usec-udp_time.tv_usec) - 1000000*((float)read_sample_window)/sampling_rate;
+				//deltas[ndeltas++%NDELTAS]=delta_micro;
+				//print_avg();
+				//print_min();
+				//fprintf(stderr, "Delta %ld\n",delta_micro);
+				//udp_time.tv_usec=0;
+				pthread_mutex_unlock(&lock_time);
+			}
+		}
 	}
 	return NULL;
 }
@@ -434,7 +426,7 @@ int run_server() {
 
 
 	//make the listen threads
-	int nthreads = 4;
+	int nthreads = 8;
 	int th_ids[nthreads];
 	pthread_t threads[nthreads];
 	for (int i=0; i<nthreads; i++) {
@@ -530,9 +522,8 @@ int run_client() {
 
 
 	int16_t * signal_buffer = (int16_t *)malloc(sizeof(int16_t)*signal_period);
-	add_tone(target_freqA, fft_length, signal_buffer);
-	add_tone(target_freqA, fft_length, signal_buffer+fft_length);
-	add_tone(0, signal_period-fft_length*2, signal_buffer+fft_length*2);
+	add_tone(target_freqA, target_freqB, fft_length, signal_buffer);
+	add_tone(0,0, signal_period-fft_length, signal_buffer+fft_length);
 
 	while (1) {
 		//send packet

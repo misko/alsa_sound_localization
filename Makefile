@@ -1,4 +1,4 @@
-all: play_tone get_tone blup_blop
+all: play_tone get_tone blup_blop blippity
 
 
 play_tone: play_tone.c
@@ -9,3 +9,6 @@ get_tone: get_tone.c
 
 blup_blop: blup_blop.c
 	gcc -std=c99 -lfftw3 -lm -lasound -lpthread blup_blop.c -o blup_blop
+
+blippity: blippity.c
+	gcc -std=c99 -lfftw3 -lm -lasound -lpthread blippity.c -o blippity
