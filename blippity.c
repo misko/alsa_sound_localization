@@ -305,10 +305,14 @@ void *thread_capture(void *threadarg) {
                 max_score_i=i;
             }
         }
-		double sample_time =((double)block_num*read_sample_window+max_score_i)/signal_period;
+
+
+        int drift = 11.5; // every 15 blocks add 1
+        long sample_index = block_num*read_sample_window+max_score_i+floor(block_num/drift);
+		double sample_time =((double)sample_index)/signal_period;
 		//double time =((double)block_num*read_sample_window+max_i)/sampling_rate;
         if (max_score>(on_off_period/2)) {
-            fprintf(stderr,"SCORE %0.6f %d\n",sample_time,max_score);
+            fprintf(stderr,"SCORE %0.6f %d %d\n",sample_time,max_score,sample_index%signal_period);
         }
 
         /*
@@ -494,10 +498,10 @@ int main (int argc, char *argv[]) {
 		deltas[i]=0;
 	}
     
-    on_off = 5;
+    on_off = 10;
     on_off_cycles = 11;
 	ndeltas=0;
-    signal_period=sampling_rate/4;
+    signal_period=sampling_rate/8;
 	int server=atoi(argv[1]);
 	device = argv[2];
 	float target_freqA_orig = atof(argv[3]);
