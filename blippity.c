@@ -33,7 +33,7 @@ struct timeval udp_time;
 char * host = NULL;
 char * device = NULL;
 int portno = 8880;
-#define NDELTAS 32
+#define NDELTAS 2056
 int ndeltas=0;
 double deltas[NDELTAS];
 
@@ -169,8 +169,8 @@ void init_record_audio(snd_pcm_t ** capture_handle, snd_pcm_hw_params_t ** hw_pa
 	}
 
 	//try to lower latency
-	snd_pcm_uframes_t buffer_size = 1024;
-	snd_pcm_uframes_t period_size = 64;
+	snd_pcm_uframes_t buffer_size = read_sample_window*1024;
+	snd_pcm_uframes_t period_size = read_sample_window;
 
 	snd_pcm_hw_params_set_buffer_size_near (*capture_handle, *hw_params, &buffer_size); //how big the full buffe ris
 	snd_pcm_hw_params_set_period_size_near (*capture_handle, *hw_params, &period_size, NULL); //this is how much is moved to CPU at a time
@@ -179,15 +179,15 @@ void init_record_audio(snd_pcm_t ** capture_handle, snd_pcm_hw_params_t ** hw_pa
 
 
 void *thread_single_capture(void * x) {
-	struct timespec sleep_time,slept_time;
-	sleep_time.tv_sec=read_sample_window/sampling_rate;
-	sleep_time.tv_nsec=1e9*(((double)read_sample_window)/sampling_rate-sleep_time.tv_sec);
+	//struct timespec sleep_time,slept_time;
+	//sleep_time.tv_sec=read_sample_window/sampling_rate;
+	//sleep_time.tv_nsec=1e9*(((double)read_sample_window)/sampling_rate-sleep_time.tv_sec);
 	//fprintf(stderr,"Sleep for %ld %ld\n",sleep_time.tv_sec,sleep_time.tv_nsec);
-	nanosleep(&sleep_time,&slept_time);
+	//nanosleep(&sleep_time,&slept_time);
 	snd_pcm_sframes_t delayp;
 	snd_pcm_sframes_t availp;
 	int ret= snd_pcm_avail_delay( capture_handle, &availp, &delayp);
-	fprintf(stderr, "%d %ld %ld %ld %0.6f\n",ret,delayp, availp, availp+delayp,1e6*((double)availp)/sampling_rate);
+	fprintf(stderr, "X %d %ld %ld %ld %0.6f\n",ret,delayp, availp, availp+delayp,1e6*((double)availp)/sampling_rate);
 
 
 	signed short * buffer = (signed short*)x;
@@ -211,7 +211,10 @@ void *thread_single_capture(void * x) {
 		exit(1);
 	}
 	long delta_micro = (1e6 * end_capt.tv_sec + end_capt.tv_usec) - (1e6*start_capt.tv_sec + start_capt.tv_usec); // - 1000000*((float)SAMPLES)/sampling_rate;
-	fprintf(stderr,"%ld microseconds on overhead capture %0.6f\n",delta_micro, ((double)1e6*read_sample_window)/sampling_rate );
+	deltas[ndeltas++%NDELTAS]=delta_micro;
+	print_avg();
+				//print_min();
+	fprintf(stderr,"%ld X microseconds on overhead capture %0.6f\n",delta_micro, ((double)1e6*read_sample_window)/sampling_rate );
 	return NULL; 
 }
 
@@ -280,8 +283,38 @@ void *thread_capture(void *threadarg) {
 		}
 		//get mutex for sound listening 
 		pthread_mutex_lock(&lock);
-		thread_single_capture(buffer);
+		snd_pcm_sframes_t delayp;
+		snd_pcm_sframes_t availp;
+		int ret= snd_pcm_avail_delay( capture_handle, &availp, &delayp);
+		fprintf(stderr, "%d %ld %ld %ld %0.6f\n",ret,delayp, availp, availp+delayp,1e6*((double)availp)/sampling_rate);
+
+
+		//signed short * buffer = (signed short*)x;
+		signed short * buffers[] = {buffer};
+		int err;
+		assert(capture_handle!=NULL);
+		struct timeval start_capt;
+		if(gettimeofday( &start_capt, 0 )) {
+			fprintf(stderr,"FAILED TO get time...\n");
+			exit(1);
+		}
+
+		if ((err = snd_pcm_readn (capture_handle, buffers, read_sample_window)) != read_sample_window) {
+			fprintf (stderr, "read from audio interface failed (%s)\n",
+					snd_strerror (err));
+			exit (1);
+		}
 		pthread_mutex_unlock(&lock);
+		struct timeval end_capt;
+		if(gettimeofday( &end_capt, 0 )) {
+			fprintf(stderr,"FAILED TO get time...\n");
+			exit(1);
+		}
+		long delta_micro = (1e6 * end_capt.tv_sec + end_capt.tv_usec) - (1e6*start_capt.tv_sec + start_capt.tv_usec); // - 1000000*((float)SAMPLES)/sampling_rate;
+		fprintf(stderr,"%ld microseconds on overhead capture %0.6f\n",delta_micro, ((double)1e6*read_sample_window)/sampling_rate );
+		deltas[ndeltas++%NDELTAS]=delta_micro;
+		print_avg();
+		//thread_single_capture(buffer);
 
 		//now copy over to complex buffer
 		//compute mean and stddev
@@ -509,6 +542,9 @@ int run_client() {
 	snd_pcm_hw_params_set_period_size_near (handle, hw_params, &period_size, NULL);
 	fprintf(stderr,"PLAY buffer-size %ld, period-size %ld, signal-period %ld\n",buffer_size,period_size, signal_period);
 	signal_period = period_size; 
+	buffer_size = signal_period*1024;
+	snd_pcm_hw_params_set_buffer_size_near (handle, hw_params, &buffer_size);
+	snd_pcm_hw_params_set_period_size_near (handle, hw_params, &period_size, NULL);
 	fprintf(stderr,"PLAY buffer-size %ld, period-size %ld, signal-period %ld\n",buffer_size,period_size, signal_period);
 	snd_pcm_sw_params_t *sw_params;
 	snd_pcm_sw_params_malloc(&sw_params);
@@ -527,11 +563,11 @@ int run_client() {
 
 	while (1) {
 		//send packet
-		int n = sendto(sockfd, buf, strlen(buf), 0, &serveraddr, serverlen);
+		/*int n = sendto(sockfd, buf, strlen(buf), 0, &serveraddr, serverlen);
 		if (n < 0)  {
 			fprintf(stderr,"Failed to send packets?\n");
 			exit(1);
-		}
+		}*/
 		//play sound
 		snd_pcm_sframes_t frames = snd_pcm_writei(handle, signal_buffer, signal_period);
 		snd_pcm_start(handle);
@@ -545,12 +581,12 @@ int run_client() {
 		snd_pcm_sframes_t delayp;
 		snd_pcm_sframes_t availp;
 		int ret= snd_pcm_avail_delay( handle, &availp, &delayp);
-		//fprintf(stderr, "%d %ld %ld %ld\n",ret,delayp, availp, availp+delayp);
+		fprintf(stderr, "%d %ld %ld %ld\n",ret,delayp, availp, availp+delayp);
 		//sleep for 
 		//fprintf(stderr,"EMIT 1\n");
 		struct timespec sleep_time,slept_time;
 		sleep_time.tv_sec=signal_period/sampling_rate;
-		sleep_time.tv_nsec=1e9*(((double)signal_period)/sampling_rate-sleep_time.tv_sec)/4;
+		sleep_time.tv_nsec=1e9*(((double)signal_period)/sampling_rate-sleep_time.tv_sec)/8;
 		//fprintf(stderr,"Sleep for %ld %ld\n",sleep_time.tv_sec,sleep_time.tv_nsec);
 		nanosleep(&sleep_time,&slept_time);
 		//fprintf(stderr,"EMIT 2\n");
