@@ -23,8 +23,11 @@
 #define M_PI (3.14159265358979323846264338327950288)
 
 
+int on_off;
+int on_off_cycles;
+
 long block_num = 0;
-long read_sample_window=4096;
+long read_sample_window=4096*2;
 long fft_length=256;
 double sensitivity=0.5;
 char * host = NULL;
@@ -47,8 +50,13 @@ double target_freqA=0;
 double target_freqB=0;
 int target_freqA_bin=0;
 int target_freqB_bin=0;
+double target_freqAp=0;
+double target_freqBp=0;
+int target_freqAp_bin=0;
+int target_freqBp_bin=0;
 double * freq_bins=NULL;
 double freq_step=0;
+long signal_period = 0; //0.5 signal period
 
 fftw_complex * signal_in;
 fftw_complex * signal_out;
@@ -67,6 +75,12 @@ void close_fft() {
 void fft(fftw_complex * in, fftw_complex *out) {
 	fftw_execute_dft(pa,in,out);
 	return;
+}
+
+int16_t * square_tone(int on_off, int n_frames, int16_t* buffer) {
+    for (int i=0; i<n_frames; i++) {
+        buffer[i]=((i%(on_off*2))<on_off ? 1 : -1) * (pow(2,14));
+    }
 }
 
 int16_t * add_tone(float freqA, float freqB, int n_frames, int16_t* buffer) {
@@ -220,10 +234,12 @@ void *thread_capture(void *threadarg) {
 	
 	int *th_id = (int*)threadarg;
 
-	int stride=fft_length/8;
+	int stride=fft_length/128;
 	int strides = (read_sample_window-fft_length)/stride+1;
 	double * powerAs = (double*)malloc(sizeof(double)*strides);	
 	double * powerBs = (double*)malloc(sizeof(double)*strides);
+	double * powerAps = (double*)malloc(sizeof(double)*strides);	
+	double * powerBps = (double*)malloc(sizeof(double)*strides);
 	if (powerAs==NULL || powerBs==NULL) {
 		fprintf(stderr,"Failed to malloc memory for power arrays\n");
 		exit(1);
@@ -232,10 +248,11 @@ void *thread_capture(void *threadarg) {
 
 	long block_num_t =0;
 	while (1) {
-		int max_i=0;
 		for (int i=0; i<strides; i++) {
 			powerAs[i]=0;
 			powerBs[i]=0;
+			powerAps[i]=0;
+			powerBps[i]=0;
 		}
 		//get mutex for sound listening 
 		pthread_mutex_lock(&lock);
@@ -274,31 +291,67 @@ void *thread_capture(void *threadarg) {
 		//fprintf(stderr,"MEAN %e STDDEV %e\n",mean,stddev);
 		stddev=sqrt(var);
 
+        
+        int on_off_period = on_off*on_off_cycles;
+        int max_score=0;
+        int max_score_i=0;
+        for (int i=0; i<read_sample_window-on_off_period; i++) {
+            int score=0;
+            for (int j=0; j<on_off_period; j++) {
+                score+=buffer[i+j]/stddev * ( (j%(on_off*2)) < on_off ? 1 : -1);       
+            }
+            if (score>max_score) {
+                max_score=score;
+                max_score_i=i;
+            }
+        }
+		double sample_time =((double)block_num*read_sample_window+max_score_i)/signal_period;
+		//double time =((double)block_num*read_sample_window+max_i)/sampling_rate;
+        if (max_score>(on_off_period/2)) {
+            fprintf(stderr,"SCORE %0.6f %d\n",sample_time,max_score);
+        }
 
-
-		for (int j=0; j<(read_sample_window-fft_length)/stride+1; j++) {
+        /*
+		for (int j=0; j<strides; j++) {
 			for (int i=0; i<fft_length; i++) {
 				in[i]=buffer[j*stride+i]/stddev;
 			}
 			fftw_execute_dft(pa,in,out);
 
 			power_spectrum[0] = abs(out[0]*out[0]); //DC component
-			power_spectrum[fft_length/2] = abs(out[fft_length/2]*out[fft_length/2]);  /* Nyquist freq. */
-			for (int k = 1; k <fft_length/2; ++k)  /* (k < N/2 rounded up) */
+			power_spectrum[fft_length/2] = abs(out[fft_length/2]*out[fft_length/2]);  // Nyquist freq. 
+			for (int k = 1; k <fft_length/2; ++k)  // (k < N/2 rounded up) 
 				power_spectrum[k] = abs(out[k]*out[k] + out[fft_length-k]*out[fft_length-k]);
 
 			double normalize = 0;
 			for (int k = 1; k<fft_length/2; ++k)
 				normalize+=power_spectrum[k];
 
-
 			powerAs[j] = creal(power_spectrum[target_freqA_bin]/normalize);
 			powerBs[j] = creal(power_spectrum[target_freqB_bin]/normalize);
+			powerAps[j] = creal(power_spectrum[target_freqAp_bin]/normalize);
+			powerBps[j] = creal(power_spectrum[target_freqBp_bin]/normalize);
 			//fprintf(stdout, "%0.2f %0.2f\n",powerA,powerB);
 		}	
-	
+
+        int can_be_accurate=1;
+        for (int i=0; i<32; i++) {
+	        if (powerAs[i]>sensitivity && powerBs[i]>sensitivity && (powerAs[i]+powerBs[i])>3*sensitivity) {// && udp_time.tv_usec>0) {
+                can_be_accurate=0;
+            }
+	        if (powerAs[strides-i-1]>sensitivity && powerBs[strides-i-1]>sensitivity && (powerAs[strides-i-1]+powerBs[strides-i-1])>3*sensitivity) {// && udp_time.tv_usec>0) {
+                can_be_accurate=0;
+            }
+        }
+        
+        if (can_be_accurate==0) {
+            fprintf(stdout,"cant be accurate....\n");
+            continue;
+        }
+
+		int max_i=0;
 		for (int i=0; i<strides; i++) {
-			//if ((powerAs[i]+powerBs[i])>(powerAs[max_i]+powerBs[max_i])) {
+			//if (powerAps[i]<sensitivity && powerBps[i]<sensitivity && (powerAs[i]*powerBs[i])>(powerAs[max_i]*powerBs[max_i])) {
 			if ((powerAs[i]*powerBs[i])>(powerAs[max_i]*powerBs[max_i])) {
 				max_i=i;
 			}
@@ -306,11 +359,12 @@ void *thread_capture(void *threadarg) {
 		if (powerAs[max_i]>sensitivity && powerBs[max_i]>sensitivity && (powerAs[max_i]+powerBs[max_i])>3*sensitivity) {// && udp_time.tv_usec>0) {
 			int ret = pthread_mutex_trylock(&lock_time);
 			if (ret==0) {
+				double sample_time =((double)block_num*read_sample_window+max_i)/signal_period;
 				double time =((double)block_num*read_sample_window+max_i)/sampling_rate;
-				fprintf(stderr,"DETECT %0.9f\n",time);
+				fprintf(stdout,"DETECT %0.9f %0.2f %0.2f %0.2f %0.2f %0.2f\n",sample_time,powerAs[max_i],powerBs[max_i],powerAs[max_i]+powerBs[max_i],powerAps[max_i],powerBps[max_i]);
 				pthread_mutex_unlock(&lock_time);
 			}
-		}
+		}*/
 	}
 	return NULL;
 }
@@ -366,7 +420,6 @@ int run_client() {
 	snd_pcm_hw_params_set_channels (handle, hw_params, 1);
 	/* These values are pretty small, might be useful in
 	   situations where latency is a dirty word. */
-	long signal_period = sampling_rate/4; //0.5 signal period
 	snd_pcm_uframes_t buffer_size = signal_period*1024;
 	snd_pcm_uframes_t period_size = signal_period/2;
 	
@@ -374,7 +427,7 @@ int run_client() {
 	snd_pcm_hw_params_set_buffer_size_near (handle, hw_params, &buffer_size);
 	snd_pcm_hw_params_set_period_size_near (handle, hw_params, &period_size, NULL);
 	fprintf(stderr,"PLAY buffer-size %ld, period-size %ld, signal-period %ld\n",buffer_size,period_size, signal_period);
-	signal_period = period_size; 
+	//signal_period = period_size; 
 	buffer_size = signal_period*1024;
 	snd_pcm_hw_params_set_buffer_size_near (handle, hw_params, &buffer_size);
 	snd_pcm_hw_params_set_period_size_near (handle, hw_params, &period_size, NULL);
@@ -391,8 +444,13 @@ int run_client() {
 
 
 	int16_t * signal_buffer = (int16_t *)malloc(sizeof(int16_t)*signal_period);
-	add_tone(target_freqA, target_freqB, fft_length, signal_buffer);
-	add_tone(0,0, signal_period-fft_length, signal_buffer+fft_length);
+	/*add_tone(0,0,fft_length, signal_buffer);
+	add_tone(target_freqA, target_freqB, fft_length, signal_buffer+fft_length);
+	add_tone(0,0,fft_length/2, signal_buffer+fft_length+fft_length);
+	add_tone(target_freqAp,target_freqBp, signal_period-2*fft_length, signal_buffer+2*fft_length);*/
+
+    square_tone(on_off, on_off_cycles*on_off,signal_buffer);
+    add_tone(0,0,signal_period- on_off_cycles*on_off, signal_buffer+on_off_cycles*on_off);
 
 	while (1) {
 		//play sound
@@ -413,9 +471,9 @@ int run_client() {
 		//fprintf(stderr,"EMIT 1\n");
 		struct timespec sleep_time,slept_time;
 		sleep_time.tv_sec=signal_period/sampling_rate;
-		sleep_time.tv_nsec=1e9*(((double)signal_period)/sampling_rate-sleep_time.tv_sec)/8;
+		sleep_time.tv_nsec=1e9*(((double)signal_period)/sampling_rate-sleep_time.tv_sec)/16;
 		//fprintf(stderr,"Sleep for %ld %ld\n",sleep_time.tv_sec,sleep_time.tv_nsec);
-		nanosleep(&sleep_time,&slept_time);
+		//nanosleep(&sleep_time,&slept_time);
 		//fprintf(stderr,"EMIT 2\n");
 		//	long delta_micro = 1000000 * (time.tv_sec-udp_time.tv_sec) + (time.tv_usec-udp_time.tv_usec) ;
 		//sleep(2);
@@ -429,20 +487,24 @@ int run_client() {
 
 int main (int argc, char *argv[]) {
 	if (argc!=9) {
-		fprintf(stderr,"%s [0server/1client] DEV freq1 freq2 fft_length host port sensitivity\n",argv[0]);
+		fprintf(stderr,"%s [0server/1client] DEV freq1 freq1p freq2 freq2p fft_length sensitivity\n",argv[0]);
 		exit(1);
 	}
 	for (int i=0; i<NDELTAS; i++) {
 		deltas[i]=0;
 	}
+    
+    on_off = 5;
+    on_off_cycles = 11;
 	ndeltas=0;
+    signal_period=sampling_rate/4;
 	int server=atoi(argv[1]);
 	device = argv[2];
 	float target_freqA_orig = atof(argv[3]);
-	float target_freqB_orig = atof(argv[4]);
-	fft_length=atoi(argv[5]);
-	host=argv[6];
-	portno=atoi(argv[7]);
+	float target_freqAp_orig = atof(argv[4]);
+	float target_freqB_orig = atof(argv[5]);
+	float target_freqBp_orig = atof(argv[6]);
+	fft_length=atoi(argv[7]);
 	sensitivity=atof(argv[8]);
 
 	block_num = 0;
@@ -456,6 +518,10 @@ int main (int argc, char *argv[]) {
 	target_freqB_bin = (int)(target_freqB_orig/freq_step);
 	target_freqA = target_freqA_bin*freq_step;
 	target_freqB = target_freqB_bin*freq_step;
+	target_freqAp_bin = (int)(target_freqAp_orig/freq_step);
+	target_freqBp_bin = (int)(target_freqBp_orig/freq_step);
+	target_freqAp = target_freqAp_bin*freq_step;
+	target_freqBp = target_freqBp_bin*freq_step;
 	fprintf(stderr,"Requested freqA for %0.3f, changed to %0.3f instead\n",target_freqA_orig,target_freqA);
 	fprintf(stderr,"Requested freqB for %0.3f, changed to %0.3f instead\n",target_freqB_orig,target_freqB);
 
