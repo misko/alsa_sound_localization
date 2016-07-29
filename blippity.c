@@ -15,21 +15,18 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <netdb.h>
 #include <sys/types.h> 
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <strings.h>
 
 #define h_addr h_addr_list[0] /* for backward compatibility */
 
 #define M_PI (3.14159265358979323846264338327950288)
 
+
+long block_num = 0;
 long read_sample_window=4096;
 long fft_length=256;
 double sensitivity=0.5;
-struct timeval udp_time;
 char * host = NULL;
 char * device = NULL;
 int portno = 8880;
@@ -177,48 +174,6 @@ void init_record_audio(snd_pcm_t ** capture_handle, snd_pcm_hw_params_t ** hw_pa
 	fprintf(stderr,"REC %d %d\n",buffer_size,period_size);
 }
 
-
-void *thread_single_capture(void * x) {
-	//struct timespec sleep_time,slept_time;
-	//sleep_time.tv_sec=read_sample_window/sampling_rate;
-	//sleep_time.tv_nsec=1e9*(((double)read_sample_window)/sampling_rate-sleep_time.tv_sec);
-	//fprintf(stderr,"Sleep for %ld %ld\n",sleep_time.tv_sec,sleep_time.tv_nsec);
-	//nanosleep(&sleep_time,&slept_time);
-	snd_pcm_sframes_t delayp;
-	snd_pcm_sframes_t availp;
-	int ret= snd_pcm_avail_delay( capture_handle, &availp, &delayp);
-	fprintf(stderr, "X %d %ld %ld %ld %0.6f\n",ret,delayp, availp, availp+delayp,1e6*((double)availp)/sampling_rate);
-
-
-	signed short * buffer = (signed short*)x;
-	signed short * buffers[] = {buffer};
-	int err;
-	assert(capture_handle!=NULL);
-	struct timeval start_capt;
-	if(gettimeofday( &start_capt, 0 )) {
-		fprintf(stderr,"FAILED TO get time...\n");
-		exit(1);
-	}
-
-	if ((err = snd_pcm_readn (capture_handle, buffers, read_sample_window)) != read_sample_window) {
-		fprintf (stderr, "read from audio interface failed (%s)\n",
-				snd_strerror (err));
-		exit (1);
-	}
-	struct timeval end_capt;
-	if(gettimeofday( &end_capt, 0 )) {
-		fprintf(stderr,"FAILED TO get time...\n");
-		exit(1);
-	}
-	long delta_micro = (1e6 * end_capt.tv_sec + end_capt.tv_usec) - (1e6*start_capt.tv_sec + start_capt.tv_usec); // - 1000000*((float)SAMPLES)/sampling_rate;
-	deltas[ndeltas++%NDELTAS]=delta_micro;
-	print_avg();
-				//print_min();
-	fprintf(stderr,"%ld X microseconds on overhead capture %0.6f\n",delta_micro, ((double)1e6*read_sample_window)/sampling_rate );
-	return NULL; 
-}
-
-
 int print_min() {
 	int nsamples=ndeltas;
 	if (nsamples>NDELTAS) {
@@ -275,6 +230,7 @@ void *thread_capture(void *threadarg) {
 	}
 	
 
+	long block_num_t =0;
 	while (1) {
 		int max_i=0;
 		for (int i=0; i<strides; i++) {
@@ -283,38 +239,23 @@ void *thread_capture(void *threadarg) {
 		}
 		//get mutex for sound listening 
 		pthread_mutex_lock(&lock);
-		snd_pcm_sframes_t delayp;
-		snd_pcm_sframes_t availp;
-		int ret= snd_pcm_avail_delay( capture_handle, &availp, &delayp);
-		fprintf(stderr, "%d %ld %ld %ld %0.6f\n",ret,delayp, availp, availp+delayp,1e6*((double)availp)/sampling_rate);
-
+		//snd_pcm_sframes_t delayp;
+		//snd_pcm_sframes_t availp;
+		//int ret= snd_pcm_avail_delay( capture_handle, &availp, &delayp);
+		//fprintf(stderr, "%d %ld %ld %ld %0.6f\n",ret,delayp, availp, availp+delayp,1e6*((double)availp)/sampling_rate);
 
 		//signed short * buffer = (signed short*)x;
 		signed short * buffers[] = {buffer};
 		int err;
 		assert(capture_handle!=NULL);
-		struct timeval start_capt;
-		if(gettimeofday( &start_capt, 0 )) {
-			fprintf(stderr,"FAILED TO get time...\n");
-			exit(1);
-		}
 
+		block_num_t = block_num++; //the block number for this therad, once lock is released this can change!
 		if ((err = snd_pcm_readn (capture_handle, buffers, read_sample_window)) != read_sample_window) {
 			fprintf (stderr, "read from audio interface failed (%s)\n",
 					snd_strerror (err));
 			exit (1);
 		}
 		pthread_mutex_unlock(&lock);
-		struct timeval end_capt;
-		if(gettimeofday( &end_capt, 0 )) {
-			fprintf(stderr,"FAILED TO get time...\n");
-			exit(1);
-		}
-		long delta_micro = (1e6 * end_capt.tv_sec + end_capt.tv_usec) - (1e6*start_capt.tv_sec + start_capt.tv_usec); // - 1000000*((float)SAMPLES)/sampling_rate;
-		fprintf(stderr,"%ld microseconds on overhead capture %0.6f\n",delta_micro, ((double)1e6*read_sample_window)/sampling_rate );
-		deltas[ndeltas++%NDELTAS]=delta_micro;
-		print_avg();
-		//thread_single_capture(buffer);
 
 		//now copy over to complex buffer
 		//compute mean and stddev
@@ -365,18 +306,8 @@ void *thread_capture(void *threadarg) {
 		if (powerAs[max_i]>sensitivity && powerBs[max_i]>sensitivity && (powerAs[max_i]+powerBs[max_i])>3*sensitivity) {// && udp_time.tv_usec>0) {
 			int ret = pthread_mutex_trylock(&lock_time);
 			if (ret==0) {
-				struct timeval time;
-				if(gettimeofday( &time, 0 )) {
-					fprintf(stderr,"FAILED TO get time...\n");
-					exit(1);
-				}
-				fprintf(stderr,"%ld %ld, %0.2f %0.2f\n",time.tv_sec,time.tv_usec,powerAs[max_i],powerBs[max_i]);
-				//long delta_micro = 1000000 * (time.tv_sec-udp_time.tv_sec) + (time.tv_usec-udp_time.tv_usec) - 1000000*((float)read_sample_window)/sampling_rate;
-				//deltas[ndeltas++%NDELTAS]=delta_micro;
-				//print_avg();
-				//print_min();
-				//fprintf(stderr, "Delta %ld\n",delta_micro);
-				//udp_time.tv_usec=0;
+				double time =((double)block_num*read_sample_window+max_i)/sampling_rate;
+				fprintf(stderr,"DETECT %0.9f\n",time);
 				pthread_mutex_unlock(&lock_time);
 			}
 		}
@@ -384,79 +315,9 @@ void *thread_capture(void *threadarg) {
 	return NULL;
 }
 
-void * udp_server(void * x) {
-	struct sockaddr_in serveraddr; /* server's addr */
-	struct sockaddr_in clientaddr; /* client addr */
-	int buffer_length=512;
-	char buf[buffer_length]; /* message buf */
-
-	int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sockfd < 0) {
-		fprintf(stderr,"Failed to make socket\n");
-		exit(1);
-	} 
-	int optval = 1;
-	setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, 
-			(const void *)&optval , sizeof(int));
-
-	bzero((char *) &serveraddr, sizeof(serveraddr));
-	serveraddr.sin_family = AF_INET;
-	serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
-	serveraddr.sin_port = htons((unsigned short)portno);
-
-	if (bind(sockfd, (struct sockaddr *) &serveraddr, 
-				sizeof(serveraddr)) < 0)  {
-		fprintf(stderr,"Error on binding\n");
-		exit(1);
-	}
-
-	int clientlen = sizeof(clientaddr);
-	while (1) {
-		bzero(buf, buffer_length);
-		int n = recvfrom(sockfd, buf, buffer_length, 0,
-				(struct sockaddr *) &clientaddr, &clientlen);
-		if (n < 0) {
-			fprintf(stderr,"Failed recvfrom\n");
-			exit(1);
-		}
-	
-		if(gettimeofday( &udp_time, 0 )) {
-			fprintf(stderr,"Failed to get time\n");
-			exit(1);
-		}
-
-		/*struct hostent * hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, 
-				sizeof(clientaddr.sin_addr.s_addr), AF_INET);
-		if (hostp == NULL) {
-			fprintf(stderr,"Failed gethost\n");
-			exit(1);
-		}
-		char * hostaddrp = inet_ntoa(clientaddr.sin_addr);
-		if (hostaddrp == NULL) {
-			fprintf(stderr,"Failed ntoa\n");
-			exit(1);
-		}
-		printf("server received datagram from %s (%s)\n", 
-				hostp->h_name, hostaddrp);
-		printf("server received %d/%d bytes: %s\n", strlen(buf), n, buf);*/
-
-		n = sendto(sockfd, buf, strlen(buf), 0, 
-				(struct sockaddr *) &clientaddr, clientlen);
-		if (n < 0)  {
-			fprintf(stderr,"Error on sendto\n");
-			exit(1);
-		}
-	}
-}
-
 int run_server() {
 	init_fft();
 	init_record_audio(&capture_handle,&hw_params,device); 
-
-	//make a thread for UDP server
-	pthread_t udp_thread; 
-	pthread_create(&udp_thread,NULL,udp_server,NULL);
-
 
 	//make the listen threads
 	int nthreads = 8;
@@ -475,34 +336,6 @@ int run_server() {
 }
 
 int run_client() {
-
-
-	//open the socket
-	int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sockfd < 0) {
-		fprintf(stderr,"failed to make sokcet\n");
-		exit(0);
-	}
-
-	struct hostent *server = gethostbyname(host);
-	if (server == NULL) {
-		fprintf(stderr,"ERROR, no such host as %s\n", host);
-		exit(0);
-	}
-
-	struct sockaddr_in serveraddr;
-	bzero((char *) &serveraddr, sizeof(serveraddr));
-	serveraddr.sin_family = AF_INET;
-	bcopy((char *)server->h_addr, 
-			(char *)&serveraddr.sin_addr.s_addr, server->h_length);
-	serveraddr.sin_port = htons(portno);
-
-	int buffer_length=512;
-	char buf[buffer_length];
-	bzero(buf, buffer_length);
-
-	int serverlen = sizeof(serveraddr);
-
 	//init the audio
 	int err;
 	snd_pcm_t *handle;
@@ -562,12 +395,6 @@ int run_client() {
 	add_tone(0,0, signal_period-fft_length, signal_buffer+fft_length);
 
 	while (1) {
-		//send packet
-		/*int n = sendto(sockfd, buf, strlen(buf), 0, &serveraddr, serverlen);
-		if (n < 0)  {
-			fprintf(stderr,"Failed to send packets?\n");
-			exit(1);
-		}*/
 		//play sound
 		snd_pcm_sframes_t frames = snd_pcm_writei(handle, signal_buffer, signal_period);
 		snd_pcm_start(handle);
@@ -609,7 +436,6 @@ int main (int argc, char *argv[]) {
 		deltas[i]=0;
 	}
 	ndeltas=0;
-	udp_time.tv_usec=0;
 	int server=atoi(argv[1]);
 	device = argv[2];
 	float target_freqA_orig = atof(argv[3]);
@@ -618,6 +444,8 @@ int main (int argc, char *argv[]) {
 	host=argv[6];
 	portno=atoi(argv[7]);
 	sensitivity=atof(argv[8]);
+
+	block_num = 0;
 
 	freq_step = (sampling_rate/2)/(fft_length/2); // go up to the nyquist frequency, linearly spaced over SAMPLES/2+1
 	freq_bins = (double*)malloc(sizeof(double)*(fft_length/2+1));
