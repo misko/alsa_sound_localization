@@ -1,5 +1,4 @@
 import numpy as np
-#import matplotlib.pyplot as plt
 from scipy.optimize import fmin,fmin_cg,fmin_bfgs
 from scipy.spatial.distance import pdist,squareform
 
@@ -36,26 +35,39 @@ class Triangulator(object):
         return x
 
 
-def where_am_i(ps,x1,x2):
+def where_am_i(ps,xs):
     #make an oracle for each point
     os=[]
-    ang_dists=np.zeros(ps.shape[0])
+    print xs.shape
+    ang_dists=np.zeros((ps.shape[0],xs.shape[0]-1))
     for i in xrange(ps.shape[0]):
         os.append(make_oracle(ps[i,:]))
-	ang_dists[i]=os[-1](x1,x2)
+        for j in xrange(xs.shape[0]-1):
+            ang_dists[i,j]=os[-1](xs[j,:],xs[j+1,:])
+
+    xdists = np.linalg.norm(xs[:-1,:] - xs[1:],axis=1)
+    print xdists
 
     def optim_func(x):
+        x = x.reshape(xs.shape)
         #x is two points
-        ret = 0
+        ret = np.linalg.norm(np.linalg.norm(x[:-1,:] - x[1:],axis=1) - xdists)**2
+        #ret = 0
 	for i in xrange(ps.shape[0]):
-            ret+=(ang_dists[i]-os[i](x[0:2],x[2:]))**2
+            for j in xrange(xs.shape[0]-1):
+                ret+=(ang_dists[i,j]-os[i](x[j,:],x[j+1,:]))**2
         return ret
    
-    init = np.zeros(4)
-    x = fmin(optim_func,init)
-    print "X1 solved:",x[:2],"actual",x1
-    print "X2 solved:",x[2:],"actual",x2
-    return x
+    avg = np.average(ps,axis=0)
+    init = np.hstack( (avg[:2],)*xs.shape[0]).flatten()
+    print init.shape
+
+    x = fmin_bfgs(optim_func,init)
+    print "original points:"
+    print xs
+    print "final:"
+    print x
+    return x.reshape(xs.shape)
     
 
 def calibration(oracle):
@@ -112,9 +124,24 @@ def __main__():
     print t.position(d)
 
     ps=np.random.rand(4,3)*10
-    x1=np.random.rand(1,2)*10
-    x2=np.random.rand(1,2)*10
-    where_am_i(ps,x1,x2)
+    xs=np.random.rand(2,2)*10
+    ps[0,:2] = 10*np.array([0,0])
+    ps[1,:2] = 10*np.array([1,0])
+    ps[2,:2] = 10*np.array([0,1])
+    ps[3,:2] = 10*np.array([1,1])
+
+    x = where_am_i(ps,xs)
+    import matplotlib.pyplot as plt
+    plt.figure()
+    plt.scatter(ps[:,0],ps[:,1],c=(0,1,0),s=100)
+    plt.scatter(x[:,0],x[:,1],c=(1,0,0),s=500)
+    plt.scatter(xs[:,0],xs[:,1],c=(0,0,1),s=100)
+    plt.show()
+    '''
+    plt.scatter(ps[:,0],ps[:,1],c=(0,1,0),s=100)
+    plt.scatter(x[:,0],x[:,1],c=(1,0,0),s=100)
+    plt.show()
+    '''
 
 if __name__ == "__main__":
     __main__()
