@@ -36,25 +36,30 @@ class Triangulator(object):
         return x
 
 
-def where_am_i(ps,x1,x2):
+def where_am_i(ps,xs):
     #make an oracle for each point
     os=[]
-    ang_dists=np.zeros(ps.shape[0])
-    for i in xrange(ps.shape[0]):
-        os.append(make_oracle(ps[i,:]))
-	ang_dists[i]=os[-1](x1,x2)
+    ang_dists=np.zeros((ps.shape[0],xs.shape[0]-1))
+    for j in xrange(xs.shape[0]-1):
+        for i in xrange(ps.shape[0]):
+            os.append(make_oracle(ps[i,:]))
+            ang_dists[i,j]=os[-1](xs[j,:],xs[j+1,:])
 
     def optim_func(x):
         #x is two points
         ret = 0
-	for i in xrange(ps.shape[0]):
-            ret+=(ang_dists[i]-os[i](x[0:2],x[2:]))**2
+        for j in xrange(xs.shape[0]-1):
+	    for i in xrange(ps.shape[0]):
+                fr=x[j*2:(j+1)*2]
+                to=x[(j+1)*2:(j+2)*2]
+                ret+=(ang_dists[i,j]-os[i](fr,to))**2
         return ret
    
-    init = np.zeros(4)
-    x = fmin(optim_func,init)
-    print "X1 solved:",x[:2],"actual",x1
-    print "X2 solved:",x[2:],"actual",x2
+    init = xs*0
+    #init[:2]=x1+5
+    #init[2:]=x2
+    x = fmin(optim_func,init,maxiter=1000,maxfun=1000)
+    print x,xs
     return x
     
 
@@ -111,10 +116,9 @@ def __main__():
     d = t.distances(init)
     print t.position(d)
 
-    ps=np.random.rand(4,3)*10
-    x1=np.random.rand(1,2)*10
-    x2=np.random.rand(1,2)*10
-    where_am_i(ps,x1,x2)
+    ps=(np.random.rand(4,3)-0.5)*10
+    xs=(np.random.rand(4,2)-0.5)
+    where_am_i(ps,xs)
 
 if __name__ == "__main__":
     __main__()
