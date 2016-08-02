@@ -39,28 +39,31 @@ class Triangulator(object):
 def where_am_i(ps,xs):
     #make an oracle for each point
     os=[]
-    ang_dists=np.zeros((ps.shape[0],xs.shape[0]-1,xs.shape[0]-1))
+    ang_dists=np.zeros((ps.shape[0],xs.shape[0],xs.shape[0]))
     for i in xrange(ps.shape[0]):
         os.append(make_oracle(ps[i,:]))
-        for j in xrange(xs.shape[0]-1):
-            for jj in xrange(j,xs.shape[0]-1):
+        for j in xrange(xs.shape[0]):
+            for jj in xrange(j,xs.shape[0]):
                 ang_dists[i,j,jj]=os[-1](xs[j,:],xs[jj,:])
 
     def optim_func(x):
         #x is two points
         ret = 0
-        for j in xrange(xs.shape[0]-1):
-            for jj in xrange(j,xs.shape[0]-1):
+        for j in xrange(xs.shape[0]):
+            for jj in xrange(j,xs.shape[0]):
 	        for i in xrange(ps.shape[0]):
                     fr=x[j*2:(j+1)*2]
                     to=x[jj*2:(jj+1)*2]
                     ret+=(ang_dists[i,j,jj]-os[i](fr,to))**2
         return ret
   
-    init = xs+np.random.rand(xs.shape[0],xs.shape[1])/4
+    #init = xs*0 #+np.random.rand(xs.shape[0],xs.shape[1])/4
+    #init = np.random.rand(xs.shape[0],xs.shape[1])
+    init = xs*0
     #init[:2]=x1+5
     #init[2:]=x2
-    x = fmin(optim_func,init)
+    #x = fmin(optim_func,init,maxiter=10000,maxfun=10000)
+    x = fmin_bfgs(optim_func,init)
     print x.reshape(xs.shape)
     print xs
     return x
@@ -72,14 +75,14 @@ def calibration(oracle):
     #depend on some magic thing that gives relative distances
     ang_dists = np.zeros((points.shape[0],points.shape[0]))
     for i in xrange(points.shape[0]):
-        for j in xrange(i,points.shape[0]):
+        for j in xrange(points.shape[0]):
             ang_dists[i,j] = oracle(points[i,:],points[j,:])
     
     def optim_func(p):
         o = make_oracle(p)
         ret = 0
         for i in xrange(points.shape[0]):
-            for j in xrange(i,points.shape[0]):
+            for j in xrange(points.shape[0]):
                 ret = ret + (ang_dists[i,j] - o(points[i,:],points[j,:]))**2
         return ret
 
@@ -119,8 +122,9 @@ def __main__():
     d = t.distances(init)
     print t.position(d)
 
-    ps=(np.random.rand(4,3)-0.5)*10
-    xs=(np.random.rand(6,2)-0.5)
+    ps=np.hstack(((np.random.rand(3,2)-0.5),np.random.rand(3,1)))*10
+    print ps
+    xs=(np.random.rand(10,2)-0.5)
     where_am_i(ps,xs)
 
 if __name__ == "__main__":
