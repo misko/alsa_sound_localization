@@ -1,5 +1,5 @@
 import numpy as np
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 from scipy.optimize import fmin,fmin_cg,fmin_bfgs
 from scipy.spatial.distance import pdist,squareform
 
@@ -36,10 +36,30 @@ class Triangulator(object):
         return x
 
 
+def where_am_i(ps,x1,x2):
+    #make an oracle for each point
+    os=[]
+    ang_dists=np.zeros(ps.shape[0])
+    for i in xrange(ps.shape[0]):
+        os.append(make_oracle(ps[i,:]))
+	ang_dists[i]=os[-1](x1,x2)
+
+    def optim_func(x):
+        #x is two points
+        ret = 0
+	for i in xrange(ps.shape[0]):
+            ret+=(ang_dists[i]-os[i](x[0:2],x[2:]))**2
+        return ret
+   
+    init = np.zeros(4)
+    x = fmin(optim_func,init)
+    print "X1 solved:",x[:2],"actual",x1
+    print "X2 solved:",x[2:],"actual",x2
+    return x
+    
 
 def calibration(oracle):
     points = .2 * np.array([(1,0),(0,1),(0,0),(1,1)]) + .4
-
 
     #depend on some magic thing that gives relative distances
     ang_dists = np.zeros((points.shape[0],points.shape[0]))
@@ -47,9 +67,6 @@ def calibration(oracle):
         for j in xrange(i,points.shape[0]):
             ang_dists[i,j] = oracle(points[i,:],points[j,:])
     
-    def upgrade_norm(x,p):
-        return (np.linalg.norm(x-p[:-1])**2 + p[-1]**2)**.5
-
     def optim_func(p):
         o = make_oracle(p)
         ret = 0
@@ -70,10 +87,12 @@ def calibration(oracle):
 
 
 def make_oracle(point):
-    
+	
+    #distance from 2D plane coordinates X to 3D point p    
     def upgrade_norm(x,p):
         return (np.linalg.norm(x-p[:-1])**2 + p[-1]**2)**.5
 
+    # the change in distance to p while moving from X->Y
     return lambda x,y: upgrade_norm(y,point) - upgrade_norm(x,point)
     #return lambda x,y: np.linalg.norm(np.vstack((y,np.array([0]))),point) - np.linalg.norm(np.vstack((x,np.array([0]))),point)
 
@@ -92,6 +111,10 @@ def __main__():
     d = t.distances(init)
     print t.position(d)
 
+    ps=np.random.rand(4,3)*10
+    x1=np.random.rand(1,2)*10
+    x2=np.random.rand(1,2)*10
+    where_am_i(ps,x1,x2)
 
 if __name__ == "__main__":
     __main__()
