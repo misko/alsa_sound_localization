@@ -40,9 +40,9 @@ def where_am_i(ps,xs):
     #make an oracle for each point
     os=[]
     ang_dists=np.zeros((ps.shape[0],xs.shape[0]-1))
-    for j in xrange(xs.shape[0]-1):
-        for i in xrange(ps.shape[0]):
-            os.append(make_oracle(ps[i,:]))
+    for i in xrange(ps.shape[0]):
+        os.append(make_oracle(ps[i,:]))
+        for j in xrange(xs.shape[0]-1):
             ang_dists[i,j]=os[-1](xs[j,:],xs[j+1,:])
 
     def optim_func(x):
@@ -58,8 +58,9 @@ def where_am_i(ps,xs):
     init = xs*0
     #init[:2]=x1+5
     #init[2:]=x2
-    x = fmin(optim_func,init,maxiter=1000,maxfun=1000)
-    print x,xs
+    x = fmin(optim_func,init)
+    print x.reshape(xs.shape)
+    print xs
     return x
     
 
@@ -117,7 +118,7 @@ def __main__():
     print t.position(d)
 
     ps=(np.random.rand(4,3)-0.5)*10
-    xs=(np.random.rand(4,2)-0.5)
+    xs=(np.random.rand(6,2)-0.5)
     where_am_i(ps,xs)
 
 if __name__ == "__main__":
