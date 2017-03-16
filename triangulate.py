@@ -152,6 +152,7 @@ def __main__():
     d = t.distances(init)
     print t.position(d)
 
+<<<<<<< Updated upstream
     '''
     ps=np.random.rand(4,3)*10
     xs=np.random.rand(2,2)*10
@@ -169,8 +170,13 @@ def __main__():
     plt.show()
     '''
     ps=np.hstack(((np.random.rand(3,2)-0.5),np.random.rand(3,1)))*10
+=======
+    speakers=2
+    ps=np.hstack(((np.random.rand(speakers,2)-0.5),np.random.rand(speakers,1)))*10
+>>>>>>> Stashed changes
     print ps
-    xs=(np.random.rand(10,2)-0.5)
+    points=20
+    xs=(np.random.rand(points,2)-0.5)
     where_am_i(ps,xs)
 
 if __name__ == "__main__":
